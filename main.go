@@ -13,8 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 )
 
-const maxPage = 3870
-
 type awsController struct {
 	config aws.Config
 }
@@ -49,7 +47,6 @@ func printProgress(arnsCh <-chan [][]string, errCh <-chan error) error {
 			if err := w.WriteAll(arns); err != nil {
 				return err
 			}
-
 			clear(len(imports[len(imports)-1]))
 			fmt.Println("done")
 
@@ -64,7 +61,7 @@ func (a *awsController) getAllResources() ([][]string, error) {
 	client := resourcegroupstaggingapi.NewFromConfig(a.config)
 	arns := make([][]string, 0, 1000)
 	requestCount := 0
-	for i := 0; i < maxPage; i++ {
+	for {
 		out, err := client.GetResources(context.Background(), &resourcegroupstaggingapi.GetResourcesInput{
 			ResourcesPerPage: aws.Int32(100),
 		})
