@@ -8,12 +8,40 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 )
+
+var mu sync.RWMutex
+
+var regions = []string{
+	"us-east-2",      // 米国東部 (オハイオ)
+	"us-east-1",      // 米国東部（バージニア北部）
+	"us-west-1",      // 米国西部 (北カリフォルニア)
+	"us-west-2",      // 米国西部 (オレゴン)
+	"af-south-1",     // アフリカ (ケープタウン)
+	"ap-east-1",      // アジアパシフィック (香港)
+	"ap-southeast-3", // アジアパシフィック (ジャカルタ)
+	"ap-south-1",     // アジアパシフィック (ムンバイ)
+	"ap-northeast-3", // アジアパシフィック (大阪)
+	"ap-northeast-2", // アジアパシフィック (ソウル)
+	"ap-southeast-1", // アジアパシフィック (シンガポール)
+	"ap-southeast-2", // アジアパシフィック (シドニー)
+	"ap-northeast-1", // アジアパシフィック (東京)
+	"ca-central-1",   // カナダ (中部)
+	"eu-central-1",   // 欧州 (フランクフルト)
+	"eu-west-1",      // 欧州 (アイルランド)
+	"eu-west-2",      // 欧州 (ロンドン)
+	"eu-south-1",     // ヨーロッパ (ミラノ)
+	"eu-west-3",      // 欧州 (パリ)
+	"eu-north-1",     // 欧州 (ストックホルム)
+	"me-south-1",     // 中東 (バーレーン)
+	"sa-east-1",      // 南米 (サンパウロ)
+}
 
 type awsController struct {
 	config aws.Config
@@ -27,6 +55,9 @@ var imports = []string{
 	"importing..",
 	"importing...",
 }
+
+var arns [][]string
+var errs []error
 
 // クリアしたい文字数
 func clear(num int) {
@@ -46,7 +77,7 @@ func (r *localReport) report(arns [][]string) error {
 	return os.WriteFile(r.path, buf.Bytes(), os.FileMode(0666))
 }
 
-func printProgress(report localReport, arnsCh <-chan [][]string, errCh <-chan error) error {
+func progress(done <-chan struct{}) {
 	count := 0
 	for {
 		select {
@@ -59,17 +90,10 @@ func printProgress(report localReport, arnsCh <-chan [][]string, errCh <-chan er
 			fmt.Printf("%s", status)
 			fmt.Print("\r")
 			count++
-		case arns := <-arnsCh:
-			if err := report.report(arns); err != nil {
-				return err
-			}
-
+		case <-done:
 			clear(len(imports[len(imports)-1]))
-			fmt.Println("done")
-
-			return nil
-		case err := <-errCh:
-			return err
+			fmt.Printf("done impoting %d resources\n", len(arns))
+			return
 		}
 	}
 }
@@ -77,10 +101,11 @@ func printProgress(report localReport, arnsCh <-chan [][]string, errCh <-chan er
 func (a *awsController) getAllResources() ([][]string, error) {
 	client := resourcegroupstaggingapi.NewFromConfig(a.config)
 	arns := make([][]string, 0, 1000)
-	requestCount := 0
+	var paginationToken *string
 	for {
 		out, err := client.GetResources(context.Background(), &resourcegroupstaggingapi.GetResourcesInput{
 			ResourcesPerPage: aws.Int32(100),
+			PaginationToken:  paginationToken,
 		})
 		if err != nil {
 			return nil, err
@@ -88,14 +113,9 @@ func (a *awsController) getAllResources() ([][]string, error) {
 		for _, v := range out.ResourceTagMappingList {
 			arns = append(arns, []string{*v.ResourceARN})
 		}
-		if out.PaginationToken == nil {
+		paginationToken = out.PaginationToken
+		if *paginationToken == "" {
 			break
-		}
-		if requestCount <= 0 {
-			requestCount = 3
-			time.Sleep(3 * time.Second)
-		} else {
-			requestCount--
 		}
 	}
 	return arns, nil
@@ -105,31 +125,52 @@ func main() {
 	flag.StringVar(&file, "file", "report.csv", "file name to report")
 	flag.Parse()
 
-	c, err := config.LoadDefaultConfig(context.Background())
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	ac := &awsController{
-		config: c,
+	var wg sync.WaitGroup
+	wg.Add(len(regions))
+	for _, v := range regions {
+		go func(region string) {
+			defer wg.Done()
+			c, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			ac := &awsController{
+				config: c,
+			}
+			a, err := ac.getAllResources()
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			arns = append(arns, a...)
+			mu.Unlock()
+		}(v)
 	}
 
-	arnsCh := make(chan [][]string)
-	errorCh := make(chan error)
-	go func(arnsCh chan<- [][]string) {
-		a, err := ac.getAllResources()
-		if err != nil {
-			errorCh <- err
-			return
-		}
-		arnsCh <- a
-	}(arnsCh)
-
+	done := make(chan struct{})
 	r := localReport{
 		path: file,
 	}
-	if err := printProgress(r, arnsCh, errorCh); err != nil {
+	go progress(done)
+
+	wg.Wait()
+	close(done)
+
+	if err := r.report(arns); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
+	for _, v := range errs {
+		fmt.Fprintln(os.Stderr, v)
+		os.Exit(2)
+	}
+
+	fmt.Println("all done!")
 }
