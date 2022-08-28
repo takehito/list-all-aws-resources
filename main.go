@@ -67,6 +67,7 @@ func (r *localReport) report(resources []resource) error {
 	content = append(content, []string{
 		"arn",
 		"account id",
+		"region",
 		"service",
 		"service type",
 		"resource id",
@@ -78,6 +79,7 @@ func (r *localReport) report(resources []resource) error {
 			content = append(content, []string{
 				resource.arn,
 				resource.accoundID,
+				resource.region,
 				resource.service,
 				resource.resourceType,
 				resource.id,
@@ -88,6 +90,7 @@ func (r *localReport) report(resources []resource) error {
 			content = append(content, []string{
 				resource.arn,
 				resource.accoundID,
+				resource.region,
 				resource.service,
 				resource.resourceType,
 				resource.id,

@@ -14,6 +14,7 @@ type resource struct {
 	arn          string
 	id           string
 	accoundID    string
+	region       string
 	service      string
 	resourceType string
 	tags         []tag
@@ -81,6 +82,7 @@ func (a *awsController) getAllResources() ([]resource, error) {
 			}
 			resource := resource{
 				arn:          *v.ResourceARN,
+				region:       a.Region,
 				accoundID:    a.AccountID,
 				service:      a.Service,
 				tags:         tags,
