@@ -11,9 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 )
 
 var mu sync.RWMutex
@@ -43,10 +41,6 @@ var regions = []string{
 	"sa-east-1",      // 南米 (サンパウロ)
 }
 
-type awsController struct {
-	config aws.Config
-}
-
 var file string
 
 var imports = []string{
@@ -56,7 +50,7 @@ var imports = []string{
 	"importing...",
 }
 
-var arns [][]string
+var resources []resource
 var errs []error
 
 // クリアしたい文字数
@@ -68,10 +62,44 @@ type localReport struct {
 	path string
 }
 
-func (r *localReport) report(arns [][]string) error {
+func (r *localReport) report(resources []resource) error {
+	content := make([][]string, 0, len(resources))
+	content = append(content, []string{
+		"arn",
+		"account id",
+		"service",
+		"service type",
+		"resource id",
+		"tag key",
+		"tag value",
+	})
+	for _, resource := range resources {
+		if len(resource.tags) == 0 {
+			content = append(content, []string{
+				resource.arn,
+				resource.accoundID,
+				resource.service,
+				resource.resourceType,
+				resource.id,
+			})
+			continue
+		}
+		for _, tag := range resource.tags {
+			content = append(content, []string{
+				resource.arn,
+				resource.accoundID,
+				resource.service,
+				resource.resourceType,
+				resource.id,
+				tag.Key,
+				tag.Value,
+			})
+		}
+	}
+
 	buf := bytes.NewBuffer([]byte(""))
 	w := csv.NewWriter(buf)
-	if err := w.WriteAll(arns); err != nil {
+	if err := w.WriteAll(content); err != nil {
 		return err
 	}
 	return os.WriteFile(r.path, buf.Bytes(), os.FileMode(0666))
@@ -92,33 +120,10 @@ func progress(done <-chan struct{}) {
 			count++
 		case <-done:
 			clear(len(imports[len(imports)-1]))
-			fmt.Printf("done impoting %d resources\n", len(arns))
+			fmt.Printf("done importing %d resources\n", len(resources))
 			return
 		}
 	}
-}
-
-func (a *awsController) getAllResources() ([][]string, error) {
-	client := resourcegroupstaggingapi.NewFromConfig(a.config)
-	arns := make([][]string, 0, 1000)
-	var paginationToken *string
-	for {
-		out, err := client.GetResources(context.Background(), &resourcegroupstaggingapi.GetResourcesInput{
-			ResourcesPerPage: aws.Int32(100),
-			PaginationToken:  paginationToken,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range out.ResourceTagMappingList {
-			arns = append(arns, []string{*v.ResourceARN})
-		}
-		paginationToken = out.PaginationToken
-		if *paginationToken == "" {
-			break
-		}
-	}
-	return arns, nil
 }
 
 func main() {
@@ -133,7 +138,7 @@ func main() {
 			c, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
 			if err != nil {
 				mu.Lock()
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("%s: %s", region, err))
 				mu.Unlock()
 				return
 			}
@@ -143,12 +148,12 @@ func main() {
 			a, err := ac.getAllResources()
 			if err != nil {
 				mu.Lock()
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("%s: %s", region, err))
 				mu.Unlock()
 				return
 			}
 			mu.Lock()
-			arns = append(arns, a...)
+			resources = append(resources, a...)
 			mu.Unlock()
 		}(v)
 	}
@@ -162,14 +167,13 @@ func main() {
 	wg.Wait()
 	close(done)
 
-	if err := r.report(arns); err != nil {
+	if err := r.report(resources); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	for _, v := range errs {
 		fmt.Fprintln(os.Stderr, v)
-		os.Exit(2)
 	}
 
 	fmt.Println("all done!")
