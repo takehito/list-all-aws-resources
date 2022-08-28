@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +19,8 @@ type awsController struct {
 	config aws.Config
 }
 
+var file string
+
 var imports = []string{
 	"importing",
 	"importing.",
@@ -29,7 +33,20 @@ func clear(num int) {
 	fmt.Printf("\r%s\r", strings.Repeat(" ", num))
 }
 
-func printProgress(arnsCh <-chan [][]string, errCh <-chan error) error {
+type localReport struct {
+	path string
+}
+
+func (r *localReport) report(arns [][]string) error {
+	buf := bytes.NewBuffer([]byte(""))
+	w := csv.NewWriter(buf)
+	if err := w.WriteAll(arns); err != nil {
+		return err
+	}
+	return os.WriteFile(r.path, buf.Bytes(), os.FileMode(0666))
+}
+
+func printProgress(report localReport, arnsCh <-chan [][]string, errCh <-chan error) error {
 	count := 0
 	for {
 		select {
@@ -43,10 +60,10 @@ func printProgress(arnsCh <-chan [][]string, errCh <-chan error) error {
 			fmt.Print("\r")
 			count++
 		case arns := <-arnsCh:
-			w := csv.NewWriter(os.Stdout)
-			if err := w.WriteAll(arns); err != nil {
+			if err := report.report(arns); err != nil {
 				return err
 			}
+
 			clear(len(imports[len(imports)-1]))
 			fmt.Println("done")
 
@@ -85,6 +102,9 @@ func (a *awsController) getAllResources() ([][]string, error) {
 }
 
 func main() {
+	flag.StringVar(&file, "file", "report.csv", "file name to report")
+	flag.Parse()
+
 	c, err := config.LoadDefaultConfig(context.Background())
 	if err != nil {
 		fmt.Println(err)
@@ -105,7 +125,10 @@ func main() {
 		arnsCh <- a
 	}(arnsCh)
 
-	if err := printProgress(arnsCh, errorCh); err != nil {
+	r := localReport{
+		path: file,
+	}
+	if err := printProgress(r, arnsCh, errorCh); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
