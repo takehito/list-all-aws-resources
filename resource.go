@@ -29,19 +29,26 @@ type awsController struct {
 }
 
 func getResourceTypeAndID(str string) (string, string, error) {
-	r := strings.Split(str, "/")
-	rt := ""
-	id := ""
-	if len(r) == 1 {
-		id = r[0]
-	} else if len(r) > 1 {
-		rt = r[0]
-		id = strings.Join(r[1:], "/")
+	var resourceType, resourceID string
+	r := strings.Split(str, ":")
+	if len(r) == 1 || (len(r) == 2 && strings.Contains(r[0], "/")) {
+		r := strings.Split(str, "/")
+		if len(r) == 1 {
+			resourceID = r[0]
+		} else if len(r) > 1 {
+			resourceType = r[0]
+			resourceID = strings.Join(r[1:], "/")
+		} else {
+			return resourceType, resourceID, fmt.Errorf("could not parse resource string: %s", str)
+		}
+	} else if len(r) == 2 {
+		resourceType = r[0]
+		resourceID = r[1]
 	} else {
-		return rt, id, fmt.Errorf("could not parse resource string: %s", str)
+		return resourceType, resourceID, fmt.Errorf("could not parse resource string: %s", str)
 	}
 
-	return rt, id, nil
+	return resourceType, resourceID, nil
 }
 
 func (a *awsController) getAllResources() ([]resource, error) {
